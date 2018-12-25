@@ -1,9 +1,12 @@
+import jwt
 import shopify
+
+from datetime import datetime, timedelta
 
 from django import VERSION as DJANGO_VERSION
 from django.conf import settings
 from django.contrib import auth
-from django.http.response import HttpResponseRedirect
+from django.http.response import HttpResponse, HttpResponseRedirect
 from django.shortcuts import render, resolve_url
 
 from .decorators import anonymous_required
@@ -43,6 +46,8 @@ def authenticate(request, *args, **kwargs):
         redirect_uri = request.build_absolute_uri(reverse(finalize))
         scope = settings.SHOPIFY_APP_API_SCOPE
         permission_url = shopify.Session(shop.strip()).create_permission_url(scope, redirect_uri)
+        state_nonce = jwt.encode({'shop': shop, 'exp': datetime.utcnow() + timedelta(minutes=1),}, settings.SECRET_KEY).decode()
+        permission_url = permission_url + '&state=' + state_nonce
 
         if settings.SHOPIFY_APP_IS_EMBEDDED:
             # Embedded Apps should use a Javascript redirect.
@@ -61,6 +66,16 @@ def authenticate(request, *args, **kwargs):
 @anonymous_required
 def finalize(request, *args, **kwargs):
     shop = request.POST.get('shop', request.GET.get('shop'))
+
+    try:
+        decoded_jwt = jwt.decode(request.POST.get('state', request.GET.get('state')), settings.SECRET_KEY)
+    except jwt.ExpiredSignatureError:
+        return HttpResponse('Token expired', status=401)
+    except jwt.InvalidTokenError:
+        return HttpResponse('Token invalid', status=401)
+
+    if decoded_jwt['shop'] != shop:
+        return HttpResponse('Shop invalid', status=401)
 
     try:
         shopify_session = shopify.Session(shop, token=kwargs.get('token'))
